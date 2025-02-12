@@ -3,69 +3,9 @@
 import React, { useState } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import * as XLSX from 'xlsx';
 import { groupBy, sumBy, map } from 'lodash';
+import { parseXMLToRecords, cleanBetRecords } from '@/utils/xmlParser';
 import type { Bet, Metrics } from '@/types/betting';
-
-const parseXMLData = (xmlText: string) => {
-  const parser = new DOMParser();
-  const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
-  const rows = xmlDoc.getElementsByTagName('ss:Row');
-  
-  // Get headers from first row
-  const headers = Array.from(rows[0].getElementsByTagName('ss:Cell')).map(cell => {
-    const data = cell.getElementsByTagName('ss:Data')[0];
-    return data ? data.textContent || '' : '';
-  });
-
-  // Process data rows
-  const data = [];
-  for (let i = 1; i < rows.length; i++) {
-    const row: any = {};
-    const cells = rows[i].getElementsByTagName('ss:Cell');
-    
-    cells.forEach((cell, index) => {
-      const data = cell.getElementsByTagName('ss:Data')[0];
-      const value = data ? data.textContent : '';
-      if (headers[index]) {
-        row[headers[index]] = value;
-      }
-    });
-    
-    // Only add rows that have some data
-    if (Object.values(row).some(v => v)) {
-      data.push(row);
-    }
-  }
-  
-  return data;
-};
-
-const parseDateString = (dateStr: string | null) => {
-  if (!dateStr) return new Date();
-  
-  // Parse date format: "9 Feb 2025 @ 4:08pm"
-  const parts = dateStr.match(/(\d+)\s+(\w+)\s+(\d{4})\s+@\s+(\d+):(\d+)(am|pm)/i);
-  if (!parts) return new Date();
-  
-  const [_, day, month, year, hours, minutes, ampm] = parts;
-  const monthMap: { [key: string]: number } = {
-    'Jan': 0, 'Feb': 1, 'Mar': 2, 'Apr': 3, 'May': 4, 'Jun': 5,
-    'Jul': 6, 'Aug': 7, 'Sep': 8, 'Oct': 9, 'Nov': 10, 'Dec': 11
-  };
-
-  let hour = parseInt(hours);
-  if (ampm.toLowerCase() === 'pm' && hour < 12) hour += 12;
-  if (ampm.toLowerCase() === 'am' && hour === 12) hour = 0;
-
-  return new Date(
-    parseInt(year),
-    monthMap[month],
-    parseInt(day),
-    hour,
-    parseInt(minutes)
-  );
-};
 
 export const BettingDashboard = () => {
   const [analysis, setAnalysis] = useState<{ bets: Bet[]; metrics: Metrics } | null>(null);
@@ -76,28 +16,15 @@ export const BettingDashboard = () => {
     try {
       // Read file as text
       const text = await file.text();
-      console.log('Raw file content sample:', text.slice(0, 200));
+      console.log('Processing file...', file.name);
 
-      // Parse XML data
-      const parsedData = parseXMLData(text);
-      console.log('Parsed data sample:', parsedData[0]);
+      // Parse XML to records
+      const records = parseXMLToRecords(text);
+      console.log('Parsed records:', records.length);
 
-      // Clean and transform the data
-      const cleanBets = parsedData.map(bet => ({
-        datePlaced: parseDateString(bet['Date Placed']),
-        status: bet['Status'] || '',
-        league: bet['League'] || '',
-        match: bet['Match'] || '',
-        betType: bet['Bet Type'] || '',
-        market: bet['Market'] || '',
-        price: parseFloat(bet['Price']?.toString() || '0') || 0,
-        wager: parseFloat(bet['Wager']?.toString() || '0') || 0,
-        winnings: parseFloat(bet['Winnings']?.toString() || '0') || 0,
-        payout: parseFloat(bet['Payout']?.toString() || '0') || 0,
-        potentialPayout: parseFloat(bet['Potential Payout']?.toString() || '0') || 0,
-        result: bet['Result'] || '',
-        betSlipId: bet['Bet Slip ID']?.toString() || ''
-      }));
+      // Clean records
+      const cleanBets = cleanBetRecords(records);
+      console.log('Cleaned bets:', cleanBets.length);
 
       // Calculate metrics
       const metrics = {
