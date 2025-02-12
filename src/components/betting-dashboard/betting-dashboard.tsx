@@ -7,74 +7,109 @@ import * as XLSX from 'xlsx';
 import { groupBy, sumBy, map } from 'lodash';
 import type { Bet, Metrics } from '@/types/betting';
 
+const parseDateString = (dateStr: string) => {
+  try {
+    // Handle the specific date format "9 Feb 2025 @ 4:08pm"
+    const [day, month, year, time] = dateStr.split(' ');
+    const [hours, minutes] = time.replace(/[ap]m$/i, '').split(':');
+    const isPM = time.toLowerCase().includes('pm');
+    
+    const monthMap: { [key: string]: number } = {
+      'Jan': 0, 'Feb': 1, 'Mar': 2, 'Apr': 3, 'May': 4, 'Jun': 5,
+      'Jul': 6, 'Aug': 7, 'Sep': 8, 'Oct': 9, 'Nov': 10, 'Dec': 11
+    };
+
+    const date = new Date(
+      parseInt(year),
+      monthMap[month],
+      parseInt(day),
+      isPM ? parseInt(hours) + 12 : parseInt(hours),
+      parseInt(minutes)
+    );
+
+    return date;
+  } catch (error) {
+    console.error('Error parsing date:', dateStr, error);
+    return new Date(); // Return current date as fallback
+  }
+};
+
 export const BettingDashboard = () => {
   const [analysis, setAnalysis] = useState<{ bets: Bet[]; metrics: Metrics } | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const processBettingHistory = async (file: File) => {
-    const data = await file.arrayBuffer();
-    const workbook = XLSX.read(data, {
-      cellDates: true,
-      cellNF: true,
-      cellText: false
-    });
+    try {
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data, {
+        cellDates: true,
+        cellNF: true,
+        cellText: false
+      });
 
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const bets = XLSX.utils.sheet_to_json(sheet, {
-      raw: false,
-      dateNF: 'yyyy-mm-dd'
-    });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const bets = XLSX.utils.sheet_to_json(sheet, {
+        raw: false,
+        dateNF: 'yyyy-mm-dd'
+      });
 
-    const cleanBets = bets.map(bet => ({
-      datePlaced: new Date(bet['Date Placed']),
-      status: bet['Status'],
-      league: bet['League'],
-      match: bet['Match'],
-      betType: bet['Bet Type'],
-      market: bet['Market'],
-      price: parseFloat(bet['Price']) || 0,
-      wager: parseFloat(bet['Wager']) || 0,
-      winnings: parseFloat(bet['Winnings']) || 0,
-      payout: parseFloat(bet['Payout']) || 0,
-      potentialPayout: parseFloat(bet['Potential Payout']) || 0,
-      result: bet['Result'],
-      betSlipId: bet['Bet Slip ID']
-    }));
+      console.log('Raw bet data:', bets[0]); // Debug log
 
-    const metrics = {
-      totalBets: cleanBets.length,
-      totalWagered: sumBy(cleanBets, 'wager'),
-      totalWinnings: sumBy(cleanBets, 'winnings'),
-      profitLoss: sumBy(cleanBets, b => b.winnings - b.wager),
-      winRate: (cleanBets.filter(b => b.status === 'Won').length / cleanBets.length) * 100,
-      
-      leagueBreakdown: map(
-        groupBy(cleanBets, 'league'),
-        (leagueBets, league) => ({
-          league,
-          totalBets: leagueBets.length,
-          wagered: sumBy(leagueBets, 'wager'),
-          winnings: sumBy(leagueBets, 'winnings'),
-          profitLoss: sumBy(leagueBets, b => b.winnings - b.wager)
-        })
-      ),
+      const cleanBets = bets.map(bet => ({
+        datePlaced: parseDateString(bet['Date Placed']),
+        status: bet['Status'],
+        league: bet['League'],
+        match: bet['Match'],
+        betType: bet['Bet Type'],
+        market: bet['Market'],
+        price: parseFloat(bet['Price']?.toString() || '0') || 0,
+        wager: parseFloat(bet['Wager']?.toString() || '0') || 0,
+        winnings: parseFloat(bet['Winnings']?.toString() || '0') || 0,
+        payout: parseFloat(bet['Payout']?.toString() || '0') || 0,
+        potentialPayout: parseFloat(bet['Potential Payout']?.toString() || '0') || 0,
+        result: bet['Result'],
+        betSlipId: bet['Bet Slip ID']?.toString() || ''
+      }));
 
-      monthlyPerformance: map(
-        groupBy(cleanBets, b => b.datePlaced.toISOString().slice(0, 7)),
-        (monthBets, month) => ({
-          month,
-          wagered: sumBy(monthBets, 'wager'),
-          winnings: sumBy(monthBets, 'winnings'),
-          profitLoss: sumBy(monthBets, b => b.winnings - b.wager),
-          totalBets: monthBets.length
-        })
-      ).sort((a, b) => a.month.localeCompare(b.month))
-    };
+      const metrics = {
+        totalBets: cleanBets.length,
+        totalWagered: sumBy(cleanBets, 'wager'),
+        totalWinnings: sumBy(cleanBets, 'winnings'),
+        profitLoss: sumBy(cleanBets, b => b.winnings - b.wager),
+        winRate: (cleanBets.filter(b => b.status === 'Won').length / cleanBets.length) * 100,
+        
+        leagueBreakdown: map(
+          groupBy(cleanBets, 'league'),
+          (leagueBets, league) => ({
+            league,
+            totalBets: leagueBets.length,
+            wagered: sumBy(leagueBets, 'wager'),
+            winnings: sumBy(leagueBets, 'winnings'),
+            profitLoss: sumBy(leagueBets, b => b.winnings - b.wager)
+          })
+        ),
 
-    return {
-      bets: cleanBets,
-      metrics
-    };
+        monthlyPerformance: map(
+          groupBy(cleanBets, b => b.datePlaced.toISOString().slice(0, 7)),
+          (monthBets, month) => ({
+            month,
+            wagered: sumBy(monthBets, 'wager'),
+            winnings: sumBy(monthBets, 'winnings'),
+            profitLoss: sumBy(monthBets, b => b.winnings - b.wager),
+            totalBets: monthBets.length
+          })
+        ).sort((a, b) => a.month.localeCompare(b.month))
+      };
+
+      return {
+        bets: cleanBets,
+        metrics
+      };
+    } catch (error) {
+      console.error('Error processing file:', error);
+      throw error;
+    }
   };
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -82,11 +117,13 @@ export const BettingDashboard = () => {
     if (!file) return;
     
     setLoading(true);
+    setError(null);
     try {
       const result = await processBettingHistory(file);
       setAnalysis(result);
     } catch (error) {
       console.error('Error processing file:', error);
+      setError('Error processing file. Please check the console for details.');
     } finally {
       setLoading(false);
     }
@@ -94,6 +131,27 @@ export const BettingDashboard = () => {
 
   if (loading) {
     return <div className="text-center p-8">Processing your betting history...</div>;
+  }
+
+  if (error) {
+    return (
+      <div className="p-4">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-red-600">Error</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p>{error}</p>
+            <button 
+              onClick={() => setError(null)}
+              className="mt-4 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+            >
+              Try Again
+            </button>
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   if (!analysis) {
