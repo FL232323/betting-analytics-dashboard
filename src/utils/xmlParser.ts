@@ -67,25 +67,34 @@ const parseDateTime = (dateStr: string): Date => {
 export const parseXMLToRecords = (xmlText: string): BetRecord[] => {
   const parser = new DOMParser();
   const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
-  const rows = xmlDoc.getElementsByTagName('ss:Row');
-  const records: BetRecord[] = [];
-  let currentRecord: Partial<BetRecord> | null = null;
+  
+  // Get all rows and convert to array
+  const rows = Array.from(xmlDoc.getElementsByTagName('ss:Row'));
+  if (rows.length === 0) {
+    console.error('No rows found in XML');
+    return [];
+  }
 
-  // Get headers
-  const headers = Array.from(rows[0].getElementsByTagName('ss:Cell')).map(cell => {
+  // Get headers from first row
+  const headerRow = rows[0];
+  const headers = Array.from(headerRow.getElementsByTagName('ss:Cell')).map(cell => {
     const data = cell.getElementsByTagName('ss:Data')[0];
     return data?.textContent || '';
   });
 
   console.log('Found headers:', headers);
 
+  const records: BetRecord[] = [];
+  let currentRecord: Partial<BetRecord> | null = null;
+
   // Process data rows
   for (let i = 1; i < rows.length; i++) {
-    const cells = rows[i].getElementsByTagName('ss:Cell');
-    const firstCell = cells[0]?.getElementsByTagName('ss:Data')[0]?.textContent || '';
+    const row = rows[i];
+    const cells = Array.from(row.getElementsByTagName('ss:Cell'));
+    const firstCellData = cells[0]?.getElementsByTagName('ss:Data')[0]?.textContent || '';
 
     // If we see a date in the first cell, start a new record
-    if (firstCell.match(/\d{1,2}\s+\w+\s+\d{4}\s+@/)) {
+    if (firstCellData.match(/\d{1,2}\s+\w+\s+\d{4}\s+@/)) {
       if (currentRecord) {
         records.push(currentRecord as BetRecord);
       }
@@ -108,9 +117,12 @@ export const parseXMLToRecords = (xmlText: string): BetRecord[] => {
 
     if (currentRecord) {
       cells.forEach((cell, index) => {
-        const data = cell.getElementsByTagName('ss:Data')[0]?.textContent || '';
-        if (data && headers[index]) {
-          currentRecord![headers[index] as keyof BetRecord] = data;
+        if (index < headers.length) {
+          const data = cell.getElementsByTagName('ss:Data')[0]?.textContent || '';
+          const header = headers[index];
+          if (data && header) {
+            currentRecord![header as keyof BetRecord] = data;
+          }
         }
       });
     }
@@ -121,34 +133,41 @@ export const parseXMLToRecords = (xmlText: string): BetRecord[] => {
     records.push(currentRecord as BetRecord);
   }
 
+  console.log(`Parsed ${records.length} records`);
   return records;
 };
 
 export const cleanBetRecords = (records: BetRecord[]) => {
-  return records.map(record => {
-    // Parse the date first to validate it
-    const date = record['Date Placed'] ? parseDateTime(record['Date Placed']) : new Date();
-    
-    // Only proceed if we got a valid date
-    if (isNaN(date.getTime())) {
-      console.error('Invalid date:', record['Date Placed']);
+  console.log('Cleaning records...');
+  return records.map((record, index) => {
+    try {
+      // Parse the date first to validate it
+      const date = record['Date Placed'] ? parseDateTime(record['Date Placed']) : new Date();
+      
+      // Only proceed if we got a valid date
+      if (isNaN(date.getTime())) {
+        console.error('Invalid date for record:', index, record['Date Placed']);
+        return null;
+      }
+
+      return {
+        datePlaced: date,
+        status: record['Status'] || '',
+        league: record['League'] || '',
+        match: record['Match'] || '',
+        betType: record['Bet Type'] || '',
+        market: record['Market'] || '',
+        price: parseFloat(record['Price']?.toString() || '0') || 0,
+        wager: parseFloat(record['Wager']?.toString() || '0') || 0,
+        winnings: parseFloat(record['Winnings']?.toString() || '0') || 0,
+        payout: parseFloat(record['Payout']?.toString() || '0') || 0,
+        potentialPayout: parseFloat(record['Potential Payout']?.toString() || '0') || 0,
+        result: record['Result'] || '',
+        betSlipId: record['Bet Slip ID']?.toString() || ''
+      };
+    } catch (error) {
+      console.error('Error cleaning record:', index, error);
       return null;
     }
-
-    return {
-      datePlaced: date,
-      status: record['Status'] || '',
-      league: record['League'] || '',
-      match: record['Match'] || '',
-      betType: record['Bet Type'] || '',
-      market: record['Market'] || '',
-      price: parseFloat(record['Price']?.toString() || '0') || 0,
-      wager: parseFloat(record['Wager']?.toString() || '0') || 0,
-      winnings: parseFloat(record['Winnings']?.toString() || '0') || 0,
-      payout: parseFloat(record['Payout']?.toString() || '0') || 0,
-      potentialPayout: parseFloat(record['Potential Payout']?.toString() || '0') || 0,
-      result: record['Result'] || '',
-      betSlipId: record['Bet Slip ID']?.toString() || ''
-    };
   }).filter((record): record is NonNullable<typeof record> => record !== null);
 };
