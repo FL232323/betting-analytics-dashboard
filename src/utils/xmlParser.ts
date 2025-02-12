@@ -14,71 +14,54 @@ export interface BetRecord {
   'Bet Slip ID': string;
 }
 
-const debugDate = (dateStr: string, parsedDate: Date) => {
-  console.log({
+const parseDateTime = (dateStr: string): Date => {
+  // Parse: "26 Jan 2025 @ 6:40pm" or "19 Nov 2023 @ 3:41pm"
+  const match = dateStr.match(/(\d{1,2})\s+(\w+)\s+(\d{4})\s+@\s+(\d{1,2}):(\d{2})(am|pm)/i);
+  if (!match) {
+    console.error('Failed to parse date:', dateStr);
+    return new Date();
+  }
+
+  const [_, dayStr, monthStr, yearStr, hourStr, minuteStr, meridiem] = match;
+
+  const day = parseInt(dayStr, 10);
+  const year = parseInt(yearStr, 10);
+  let hour = parseInt(hourStr, 10);
+
+  // Convert to 24-hour format
+  if (meridiem.toLowerCase() === 'pm' && hour !== 12) {
+    hour += 12;
+  } else if (meridiem.toLowerCase() === 'am' && hour === 12) {
+    hour = 0;
+  }
+
+  const monthMap: { [key: string]: number } = {
+    'jan': 0, 'feb': 1, 'mar': 2, 'apr': 3, 'may': 4, 'jun': 5,
+    'jul': 6, 'aug': 7, 'sep': 8, 'oct': 9, 'nov': 10, 'dec': 11
+  };
+
+  const month = monthMap[monthStr.toLowerCase()];
+  const minutes = parseInt(minuteStr, 10);
+
+  // Use UTC to avoid timezone issues
+  const date = new Date(Date.UTC(year, month, day, hour, minutes));
+
+  // Debug logging
+  console.log('Date parsing:', {
     original: dateStr,
-    parsed: parsedDate,
-    isoString: parsedDate.toISOString(),
-    getTime: parsedDate.getTime(),
-    year: parsedDate.getFullYear(),
-    month: parsedDate.getMonth(),
-    day: parsedDate.getDate(),
-    hours: parsedDate.getHours(),
-    minutes: parsedDate.getMinutes(),
-    isValid: !isNaN(parsedDate.getTime())
+    parsed: {
+      year,
+      month: monthStr,
+      monthIndex: month,
+      day,
+      hour,
+      minutes,
+      meridiem
+    },
+    result: date.toISOString()
   });
-};
 
-export const parseDateString = (dateStr: string | null) => {
-  if (!dateStr) {
-    console.log('Empty date string received');
-    return new Date();
-  }
-
-  try {
-    console.log('Parsing date string:', dateStr);
-    
-    // Parse date format: "9 Feb 2025 @ 4:08pm"
-    const parts = dateStr.match(/(\d+)\s+(\w+)\s+(\d{4})\s+@\s+(\d+):(\d+)(am|pm)/i);
-    if (!parts) {
-      console.log('Failed to match date pattern for:', dateStr);
-      return new Date();
-    }
-
-    const [_, day, month, year, hours, minutes, ampm] = parts;
-    console.log('Matched parts:', { day, month, year, hours, minutes, ampm });
-
-    const monthMap: { [key: string]: number } = {
-      'Jan': 0, 'Feb': 1, 'Mar': 2, 'Apr': 3, 'May': 4, 'Jun': 5,
-      'Jul': 6, 'Aug': 7, 'Sep': 8, 'Oct': 9, 'Nov': 10, 'Dec': 11
-    };
-
-    let hour = parseInt(hours);
-    if (ampm.toLowerCase() === 'pm' && hour < 12) hour += 12;
-    if (ampm.toLowerCase() === 'am' && hour === 12) hour = 0;
-
-    console.log('Calculated values:', {
-      year: parseInt(year),
-      month: monthMap[month],
-      day: parseInt(day),
-      hour,
-      minutes: parseInt(minutes)
-    });
-
-    const date = new Date(
-      parseInt(year),
-      monthMap[month],
-      parseInt(day),
-      hour,
-      parseInt(minutes)
-    );
-
-    debugDate(dateStr, date);
-    return date;
-  } catch (error) {
-    console.error('Error parsing date:', dateStr, error);
-    return new Date();
-  }
+  return date;
 };
 
 export const parseXMLToRecords = (xmlText: string): BetRecord[] => {
@@ -94,21 +77,16 @@ export const parseXMLToRecords = (xmlText: string): BetRecord[] => {
     return data?.textContent || '';
   });
 
-  console.log('Headers found:', headers);
+  console.log('Found headers:', headers);
 
   // Process data rows
   for (let i = 1; i < rows.length; i++) {
     const cells = rows[i].getElementsByTagName('ss:Cell');
-    const firstCell = cells[0]?.getElementsByTagName('ss:Data')[0]?.textContent;
+    const firstCell = cells[0]?.getElementsByTagName('ss:Data')[0]?.textContent || '';
 
-    if (firstCell) {
-      console.log(`Row ${i} first cell:`, firstCell);
-    }
-
-    // If first cell has a date, start a new record
-    if (firstCell?.match(/\d+\s+\w+\s+\d{4}\s+@\s+\d+:\d+[ap]m/i)) {
+    // If we see a date in the first cell, start a new record
+    if (firstCell.match(/\d{1,2}\s+\w+\s+\d{4}\s+@/)) {
       if (currentRecord) {
-        console.log('Completed record:', currentRecord);
         records.push(currentRecord as BetRecord);
       }
       currentRecord = {
@@ -129,7 +107,7 @@ export const parseXMLToRecords = (xmlText: string): BetRecord[] => {
     }
 
     if (currentRecord) {
-      Array.from(cells).forEach((cell, index) => {
+      cells.forEach((cell, index) => {
         const data = cell.getElementsByTagName('ss:Data')[0]?.textContent || '';
         if (data && headers[index]) {
           currentRecord![headers[index] as keyof BetRecord] = data;
@@ -138,9 +116,8 @@ export const parseXMLToRecords = (xmlText: string): BetRecord[] => {
     }
   }
 
-  // Add the last record
+  // Add the last record if there is one
   if (currentRecord) {
-    console.log('Final record:', currentRecord);
     records.push(currentRecord as BetRecord);
   }
 
@@ -148,24 +125,30 @@ export const parseXMLToRecords = (xmlText: string): BetRecord[] => {
 };
 
 export const cleanBetRecords = (records: BetRecord[]) => {
-  return records.map((record, index) => {
-    console.log(`Cleaning record ${index}:`, record);
-    const cleaned = {
-      datePlaced: parseDateString(record['Date Placed']),
-      status: record['Status'],
-      league: record['League'],
-      match: record['Match'],
-      betType: record['Bet Type'],
-      market: record['Market'],
-      price: parseFloat(record['Price']) || 0,
-      wager: parseFloat(record['Wager']) || 0,
-      winnings: parseFloat(record['Winnings']) || 0,
-      payout: parseFloat(record['Payout']) || 0,
-      potentialPayout: parseFloat(record['Potential Payout']) || 0,
-      result: record['Result'],
-      betSlipId: record['Bet Slip ID']
+  return records.map(record => {
+    // Parse the date first to validate it
+    const date = record['Date Placed'] ? parseDateTime(record['Date Placed']) : new Date();
+    
+    // Only proceed if we got a valid date
+    if (isNaN(date.getTime())) {
+      console.error('Invalid date:', record['Date Placed']);
+      return null;
+    }
+
+    return {
+      datePlaced: date,
+      status: record['Status'] || '',
+      league: record['League'] || '',
+      match: record['Match'] || '',
+      betType: record['Bet Type'] || '',
+      market: record['Market'] || '',
+      price: parseFloat(record['Price']?.toString() || '0') || 0,
+      wager: parseFloat(record['Wager']?.toString() || '0') || 0,
+      winnings: parseFloat(record['Winnings']?.toString() || '0') || 0,
+      payout: parseFloat(record['Payout']?.toString() || '0') || 0,
+      potentialPayout: parseFloat(record['Potential Payout']?.toString() || '0') || 0,
+      result: record['Result'] || '',
+      betSlipId: record['Bet Slip ID']?.toString() || ''
     };
-    console.log(`Cleaned record ${index}:`, cleaned);
-    return cleaned;
-  });
+  }).filter((record): record is NonNullable<typeof record> => record !== null);
 };
