@@ -3,69 +3,14 @@
 import React, { useState } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { groupBy, sumBy, map } from 'lodash';
-import { parseXMLToRecords, cleanBetRecords } from '@/utils/xmlParser';
-import type { Bet, Metrics } from '@/types/betting';
+import { processBettingHistory } from '@/utils/xmlParser';
+import type { BettingDataStore } from '@/types/betting';
 
 export const BettingDashboard = () => {
-  const [analysis, setAnalysis] = useState<{ bets: Bet[]; metrics: Metrics } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const processBettingHistory = async (file: File) => {
-    try {
-      // Read file as text
-      const text = await file.text();
-      console.log('Processing file...', file.name);
-
-      // Parse XML to records
-      const records = parseXMLToRecords(text);
-      console.log('Parsed records:', records.length);
-
-      // Clean records
-      const cleanBets = cleanBetRecords(records);
-      console.log('Cleaned bets:', cleanBets.length);
-
-      // Calculate metrics
-      const metrics = {
-        totalBets: cleanBets.length,
-        totalWagered: sumBy(cleanBets, 'wager'),
-        totalWinnings: sumBy(cleanBets, 'winnings'),
-        profitLoss: sumBy(cleanBets, b => b.winnings - b.wager),
-        winRate: (cleanBets.filter(b => b.status.toLowerCase() === 'won').length / cleanBets.length) * 100,
-        
-        leagueBreakdown: map(
-          groupBy(cleanBets, 'league'),
-          (leagueBets, league) => ({
-            league,
-            totalBets: leagueBets.length,
-            wagered: sumBy(leagueBets, 'wager'),
-            winnings: sumBy(leagueBets, 'winnings'),
-            profitLoss: sumBy(leagueBets, b => b.winnings - b.wager)
-          })
-        ),
-
-        monthlyPerformance: map(
-          groupBy(cleanBets, b => b.datePlaced.toISOString().slice(0, 7)),
-          (monthBets, month) => ({
-            month,
-            wagered: sumBy(monthBets, 'wager'),
-            winnings: sumBy(monthBets, 'winnings'),
-            profitLoss: sumBy(monthBets, b => b.winnings - b.wager),
-            totalBets: monthBets.length
-          })
-        ).sort((a, b) => a.month.localeCompare(b.month))
-      };
-
-      return {
-        bets: cleanBets,
-        metrics
-      };
-    } catch (error) {
-      console.error('Error processing file:', error);
-      throw error;
-    }
-  };
+  const [store, setStore] = useState<BettingDataStore | null>(null);
+  const [progress, setProgress] = useState(0);
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -74,18 +19,136 @@ export const BettingDashboard = () => {
     setLoading(true);
     setError(null);
     try {
-      const result = await processBettingHistory(file);
-      setAnalysis(result);
+      console.log('Starting file processing:', file.name);
+      const dataStore = await processBettingHistory(file, (progress) => {
+        setProgress(Math.round(progress));
+        console.log(`Processing progress: ${Math.round(progress)}%`);
+      });
+      
+      console.log('Processing complete. Data store:', {
+        totalBets: dataStore.metadata.totalBets,
+        totalWagered: dataStore.metadata.totalWagered,
+        dateRange: dataStore.metadata.dateRange,
+        uniquePlayers: dataStore.metadata.players.size,
+        uniquePropTypes: dataStore.metadata.propTypes.size,
+      });
+
+      setStore(dataStore);
     } catch (error) {
       console.error('Error processing file:', error);
       setError('Error processing file. Please check the console for details.');
     } finally {
       setLoading(false);
+      setProgress(0);
     }
   };
 
+  const getPlayerPerformanceData = () => {
+    if (!store) return [];
+    
+    const playerStats = new Map<string, {
+      player: string;
+      totalBets: number;
+      wins: number;
+      winRate: number;
+      totalWagered: number;
+      profitLoss: number;
+    }>();
+
+    store.parlays.byId.forEach(bet => {
+      bet.legs.forEach(leg => {
+        const stats = playerStats.get(leg.player) || {
+          player: leg.player,
+          totalBets: 0,
+          wins: 0,
+          winRate: 0,
+          totalWagered: 0,
+          profitLoss: 0
+        };
+
+        stats.totalBets++;
+        if (leg.result.toLowerCase() === 'win') {
+          stats.wins++;
+        }
+        stats.winRate = (stats.wins / stats.totalBets) * 100;
+        stats.totalWagered += bet.wager / bet.legs.length; // Distribute wager across legs
+        stats.profitLoss += leg.result.toLowerCase() === 'win' ? 
+          (bet.potentialPayout - bet.wager) / bet.legs.length : 
+          -bet.wager / bet.legs.length;
+
+        playerStats.set(leg.player, stats);
+      });
+    });
+
+    console.log('Player performance data:', Array.from(playerStats.values()));
+    return Array.from(playerStats.values())
+      .filter(stats => stats.totalBets > 0)
+      .sort((a, b) => b.totalBets - a.totalBets)
+      .slice(0, 10); // Top 10 most bet players
+  };
+
+  const getPropTypePerformanceData = () => {
+    if (!store) return [];
+    
+    const propStats = new Map<string, {
+      propType: string;
+      totalBets: number;
+      wins: number;
+      winRate: number;
+      averageOdds: number;
+      profitLoss: number;
+    }>();
+
+    store.parlays.byId.forEach(bet => {
+      bet.legs.forEach(leg => {
+        const stats = propStats.get(leg.propType) || {
+          propType: leg.propType,
+          totalBets: 0,
+          wins: 0,
+          winRate: 0,
+          averageOdds: 0,
+          profitLoss: 0
+        };
+
+        stats.totalBets++;
+        if (leg.result.toLowerCase() === 'win') {
+          stats.wins++;
+        }
+        stats.winRate = (stats.wins / stats.totalBets) * 100;
+        stats.averageOdds = ((stats.averageOdds * (stats.totalBets - 1)) + leg.odds) / stats.totalBets;
+        stats.profitLoss += leg.result.toLowerCase() === 'win' ? 
+          (bet.potentialPayout - bet.wager) / bet.legs.length : 
+          -bet.wager / bet.legs.length;
+
+        propStats.set(leg.propType, stats);
+      });
+    });
+
+    console.log('Prop type performance data:', Array.from(propStats.values()));
+    return Array.from(propStats.values())
+      .filter(stats => stats.totalBets > 0)
+      .sort((a, b) => b.totalBets - a.totalBets);
+  };
+
   if (loading) {
-    return <div className="text-center p-8">Processing your betting history...</div>;
+    return (
+      <div className="p-4">
+        <Card>
+          <CardContent className="pt-6">
+            <div className="text-center">
+              <div className="text-xl font-bold mb-2">Processing Betting History</div>
+              <div className="text-sm text-gray-600 mb-4">Progress: {progress}%</div>
+              <div className="w-full bg-gray-200 rounded-full h-2.5">
+                <div 
+                  className="bg-blue-600 h-2.5 rounded-full" 
+                  style={{ width: `${progress}%` }}
+                ></div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   if (error) {
@@ -109,7 +172,7 @@ export const BettingDashboard = () => {
     );
   }
 
-  if (!analysis) {
+  if (!store) {
     return (
       <div className="p-4">
         <Card>
@@ -129,74 +192,77 @@ export const BettingDashboard = () => {
     );
   }
 
-  const { metrics } = analysis;
+  const playerData = getPlayerPerformanceData();
+  const propData = getPropTypePerformanceData();
 
   return (
     <div className="p-4 space-y-4">
+      {/* Summary Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card>
           <CardContent className="pt-6">
-            <div className="text-2xl font-bold text-blue-600">${metrics.totalWagered.toFixed(2)}</div>
+            <div className="text-2xl font-bold text-blue-600">{store.metadata.totalBets}</div>
+            <div className="text-sm text-gray-600">Total Bets</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="text-2xl font-bold text-green-600">${store.metadata.totalWagered.toFixed(2)}</div>
             <div className="text-sm text-gray-600">Total Wagered</div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-6">
-            <div className="text-2xl font-bold text-green-600">${metrics.totalWinnings.toFixed(2)}</div>
-            <div className="text-sm text-gray-600">Total Winnings</div>
+            <div className="text-2xl font-bold text-purple-600">{store.metadata.players.size}</div>
+            <div className="text-sm text-gray-600">Unique Players</div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-6">
-            <div className={`text-2xl font-bold ${metrics.profitLoss >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-              ${metrics.profitLoss.toFixed(2)}
-            </div>
-            <div className="text-sm text-gray-600">Profit/Loss</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-2xl font-bold text-purple-600">{metrics.winRate.toFixed(1)}%</div>
-            <div className="text-sm text-gray-600">Win Rate</div>
+            <div className="text-2xl font-bold text-orange-600">{store.metadata.propTypes.size}</div>
+            <div className="text-sm text-gray-600">Prop Types</div>
           </CardContent>
         </Card>
       </div>
 
+      {/* Player Performance Chart */}
       <Card>
         <CardHeader>
-          <CardTitle>Monthly Performance</CardTitle>
+          <CardTitle>Player Performance</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="h-64">
+          <div className="h-96">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={metrics.monthlyPerformance}>
+              <BarChart data={playerData} layout="vertical">
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="month" />
-                <YAxis />
+                <XAxis type="number" domain={[0, 100]} />
+                <YAxis type="category" dataKey="player" width={150} />
                 <Tooltip />
                 <Legend />
-                <Line type="monotone" dataKey="profitLoss" stroke="#82ca9d" name="Profit/Loss" />
-                <Line type="monotone" dataKey="wagered" stroke="#8884d8" name="Wagered" />
-              </LineChart>
+                <Bar dataKey="winRate" name="Win Rate %" fill="#82ca9d" />
+                <Bar dataKey="totalBets" name="Total Bets" fill="#8884d8" />
+              </BarChart>
             </ResponsiveContainer>
           </div>
         </CardContent>
       </Card>
 
+      {/* Prop Type Performance Chart */}
       <Card>
         <CardHeader>
-          <CardTitle>League Performance</CardTitle>
+          <CardTitle>Prop Type Performance</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="h-64">
+          <div className="h-96">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={metrics.leagueBreakdown}>
+              <BarChart data={propData} layout="vertical">
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="league" />
-                <YAxis />
+                <XAxis type="number" domain={[0, 100]} />
+                <YAxis type="category" dataKey="propType" width={150} />
                 <Tooltip />
                 <Legend />
-                <Bar dataKey="profitLoss" fill="#82ca9d" name="Profit/Loss" />
+                <Bar dataKey="winRate" name="Win Rate %" fill="#82ca9d" />
+                <Bar dataKey="averageOdds" name="Average Odds" fill="#8884d8" />
               </BarChart>
             </ResponsiveContainer>
           </div>
