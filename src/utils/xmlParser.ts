@@ -1,141 +1,117 @@
-import { BettingDataStore, ParentBet, BetLeg } from '@/types/betting';
-import { initializeDataStore, CHUNK_SIZE, processChunk } from '@/lib/dataStore';
-
-interface RawBetRow {
-  'Date Placed': string;
-  'Status': string;
-  'League': string;
-  'Match': string;
-  'Bet Type': string;
-  'Market': string;
-  'Price': string;
-  'Wager': string;
-  'Winnings': string;
-  'Payout': string;
-  'Potential Payout': string;
-  'Result': string;
-  'Bet Slip ID': string;
-}
+// Earlier code remains the same...
 
 const extractCellValue = (cell: Element): string => {
-  const dataElement = cell.getElementsByTagName('ss:Data')[0];
-  const value = dataElement?.textContent || '';
-  console.log('Extracted cell value:', {
-    hasDataElement: !!dataElement,
-    value,
-    cellHTML: cell.outerHTML
-  });
-  return value;
+  try {
+    const dataElement = cell.getElementsByTagName('ss:Data')[0];
+    const value = dataElement?.textContent || '';
+    console.log('Extracted cell value:', {
+      value,
+      type: typeof value,
+      hasData: !!dataElement,
+      rawHTML: cell.innerHTML // Show the actual XML content
+    });
+    return value;
+  } catch (error) {
+    console.error('Error extracting cell value:', error);
+    return '';
+  }
 };
 
 const parseDateTime = (dateStr: string): Date => {
-  console.log('Attempting to parse date:', {
-    input: dateStr,
-    type: typeof dateStr,
-    length: dateStr?.length
-  });
-
   try {
+    console.log('Raw date string:', dateStr);
+    
     if (!dateStr || typeof dateStr !== 'string') {
-      console.error('Invalid date input:', dateStr);
+      throw new Error(`Invalid date input: ${dateStr}`);
+    }
+
+    // Handle empty string
+    if (dateStr.trim() === '') {
+      console.log('Empty date string, returning current date');
       return new Date();
     }
 
-    // Parse: "9 Feb 2025 @ 4:08pm"
-    const regex = /(\d{1,2})\s+(\w+)\s+(\d{4})\s+@\s+(\d{1,2}):(\d{2})(am|pm)/i;
-    const match = dateStr.match(regex);
+    // Parse format: "8 Dec 2024 @ 10:32am"
+    const match = dateStr.match(/(\d{1,2})\s+(\w+)\s+(\d{4})\s+@\s+(\d{1,2}):(\d{2})(am|pm)/i);
     
-    console.log('Date regex match:', {
-      dateStr,
-      match,
-      regex: regex.toString()
+    console.log('Date parsing match:', {
+      input: dateStr,
+      matchResult: match,
+      matchGroups: match ? Array.from(match) : null
     });
 
     if (!match) {
-      console.error('Date string did not match expected format:', dateStr);
-      return new Date();
+      throw new Error(`Date doesn't match expected format: ${dateStr}`);
     }
 
-    const [_, day, month, year, hour, minute, meridiem] = match;
+    const [_, dayStr, monthStr, yearStr, hourStr, minuteStr, meridiem] = match;
     
-    console.log('Parsed date components:', {
-      day, month, year, hour, minute, meridiem
-    });
+    // Convert components to numbers
+    const year = parseInt(yearStr);
+    const day = parseInt(dayStr);
+    let hours = parseInt(hourStr);
+    const minutes = parseInt(minuteStr);
+    
+    // Convert to 24-hour format
+    if (meridiem.toLowerCase() === 'pm' && hours < 12) {
+      hours += 12;
+    } else if (meridiem.toLowerCase() === 'am' && hours === 12) {
+      hours = 0;
+    }
 
+    // Get month index
     const monthMap: { [key: string]: number } = {
       'jan': 0, 'feb': 1, 'mar': 2, 'apr': 3, 'may': 4, 'jun': 5,
       'jul': 6, 'aug': 7, 'sep': 8, 'oct': 9, 'nov': 10, 'dec': 11
     };
+    
+    const monthIndex = monthMap[monthStr.toLowerCase()];
+    if (monthIndex === undefined) {
+      throw new Error(`Invalid month: ${monthStr}`);
+    }
 
-    let hours = parseInt(hour);
-    if (meridiem.toLowerCase() === 'pm' && hours < 12) hours += 12;
-    if (meridiem.toLowerCase() === 'am' && hours === 12) hours = 0;
-
-    const monthIndex = monthMap[month.toLowerCase()];
-    console.log('Calculated values:', {
-      year: parseInt(year),
-      monthIndex,
-      day: parseInt(day),
-      hours,
-      minutes: parseInt(minute)
+    console.log('Date components:', {
+      year, monthIndex, day, hours, minutes,
+      original: {
+        year: yearStr,
+        month: monthStr,
+        day: dayStr,
+        hour: hourStr,
+        minute: minuteStr,
+        meridiem
+      }
     });
 
-    const date = new Date(
-      parseInt(year),
-      monthIndex,
-      parseInt(day),
-      hours,
-      parseInt(minute)
-    );
-
-    console.log('Created date object:', {
-      date,
-      isValid: !isNaN(date.getTime()),
-      isoString: date.toISOString()
+    // Create date object with UTC
+    const date = new Date(Date.UTC(year, monthIndex, day, hours, minutes));
+    
+    console.log('Created date:', {
+      date: date.toISOString(),
+      timestamp: date.getTime(),
+      valid: !isNaN(date.getTime())
     });
+
+    if (isNaN(date.getTime())) {
+      throw new Error('Created invalid date');
+    }
 
     return date;
   } catch (error) {
-    console.error('Error in date parsing:', {
-      dateStr,
+    console.error('Date parsing error:', {
+      input: dateStr,
       error: error instanceof Error ? error.message : 'Unknown error'
     });
-    return new Date();
+    return new Date(); // Return current date as fallback
   }
 };
 
+// Rest of the code remains the same, but add this to parseXMLToRows:
 const parseXMLToRows = (xmlText: string): RawBetRow[] => {
-  console.log('Starting XML parsing');
-  const parser = new DOMParser();
-  const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
-  
-  console.log('XML document:', {
-    rootElement: xmlDoc.documentElement.tagName,
-    hasWorkbook: !!xmlDoc.getElementsByTagName('ss:Workbook').length,
-    hasWorksheet: !!xmlDoc.getElementsByTagName('ss:Worksheet').length
-  });
+  // ... existing code ...
 
-  const rows = Array.from(xmlDoc.getElementsByTagName('ss:Row'));
-  console.log('Found rows:', {
-    total: rows.length,
-    firstRowHTML: rows[0]?.outerHTML,
-    secondRowHTML: rows[1]?.outerHTML
-  });
-
-  if (rows.length === 0) {
-    console.error('No rows found in XML');
-    return [];
-  }
-
-  // Get headers from first row
-  const headers = Array.from(rows[0].getElementsByTagName('ss:Cell')).map(extractCellValue);
-  console.log('Extracted headers:', headers);
-
-  const betRows: RawBetRow[] = [];
-  
-  // Process each row after headers
+  // When creating row data:
   for (let i = 1; i < rows.length; i++) {
-    console.log(`Processing row ${i}`);
+    console.log(`\n=== Processing row ${i} ===`);
     const cells = Array.from(rows[i].getElementsByTagName('ss:Cell'));
     const rowData: Partial<RawBetRow> = {};
     
@@ -143,84 +119,13 @@ const parseXMLToRows = (xmlText: string): RawBetRow[] => {
       if (headers[index]) {
         const value = extractCellValue(cell);
         rowData[headers[index] as keyof RawBetRow] = value;
+        console.log(`${headers[index]}: "${value}"`);
       }
     });
     
-    console.log(`Row ${i} data:`, rowData);
+    console.log('Complete row data:', rowData);
     betRows.push(rowData as RawBetRow);
   }
 
-  console.log('Finished parsing XML, total rows:', betRows.length);
   return betRows;
-};
-
-export const processBettingHistory = async (
-  file: File,
-  updateProgress: (progress: number) => void
-): Promise<BettingDataStore> => {
-  try {
-    console.log('Starting file processing:', {
-      name: file.name,
-      size: file.size,
-      type: file.type
-    });
-
-    const text = await file.text();
-    console.log('File content preview:', text.substring(0, 500));
-    
-    const rows = parseXMLToRows(text);
-    console.log('Parsed rows:', {
-      total: rows.length,
-      firstRow: rows[0],
-      lastRow: rows[rows.length - 1]
-    });
-    
-    const store = initializeDataStore();
-    const chunks = splitIntoChunks(rows, CHUNK_SIZE);
-    
-    console.log('Processing in chunks:', {
-      totalChunks: chunks.length,
-      chunkSize: CHUNK_SIZE
-    });
-
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
-      console.log(`Processing chunk ${i + 1}/${chunks.length}`, {
-        chunkSize: chunk.length,
-        firstItemInChunk: chunk[0],
-        lastItemInChunk: chunk[chunk.length - 1]
-      });
-
-      await processChunk(chunk, store, (chunkProgress) => {
-        const overallProgress = ((i / chunks.length) * 100) + (chunkProgress / chunks.length);
-        updateProgress(overallProgress);
-      });
-
-      await new Promise(resolve => setTimeout(resolve, 0));
-    }
-
-    console.log('Processing complete. Final store state:', {
-      totalBets: store.metadata.totalBets,
-      totalWagered: store.metadata.totalWagered,
-      uniquePlayers: store.metadata.players.size,
-      uniquePropTypes: store.metadata.propTypes.size,
-      dateRange: store.metadata.dateRange
-    });
-
-    return store;
-  } catch (error) {
-    console.error('Error in processBettingHistory:', {
-      error: error instanceof Error ? error.message : 'Unknown error',
-      stack: error instanceof Error ? error.stack : undefined
-    });
-    throw error;
-  }
-};
-
-const splitIntoChunks = <T>(array: T[], size: number): T[][] => {
-  const chunks: T[][] = [];
-  for (let i = 0; i < array.length; i += size) {
-    chunks.push(array.slice(i, i + size));
-  }
-  return chunks;
 };
