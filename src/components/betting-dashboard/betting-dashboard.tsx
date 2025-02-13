@@ -3,14 +3,12 @@
 import React, { useState } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { processBettingHistory } from '@/utils/xmlParser';
-import type { BettingDataStore } from '@/types/betting';
+import { parseFile } from '@/utils/fileParser';
 
 export const BettingDashboard = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [store, setStore] = useState<BettingDataStore | null>(null);
-  const [progress, setProgress] = useState(0);
+  const [betsData, setBetsData] = useState<any[]>([]);
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -20,114 +18,96 @@ export const BettingDashboard = () => {
     setError(null);
     try {
       console.log('Starting file processing:', file.name);
-      const dataStore = await processBettingHistory(file, (progress) => {
-        setProgress(Math.round(progress));
-        console.log(`Processing progress: ${Math.round(progress)}%`);
-      });
-      
-      console.log('Processing complete. Data store:', {
-        totalBets: dataStore.metadata.totalBets,
-        totalWagered: dataStore.metadata.totalWagered,
-        dateRange: dataStore.metadata.dateRange,
-        uniquePlayers: dataStore.metadata.players.size,
-        uniquePropTypes: dataStore.metadata.propTypes.size,
-      });
-
-      setStore(dataStore);
+      const bets = await parseFile(file);
+      console.log('Parsed bets:', bets);
+      setBetsData(bets);
     } catch (error) {
       console.error('Error processing file:', error);
       setError('Error processing file. Please check the console for details.');
     } finally {
       setLoading(false);
-      setProgress(0);
     }
   };
 
-  const getPlayerPerformanceData = () => {
-    if (!store) return [];
-    
-    const playerStats = new Map<string, {
-      player: string;
-      totalBets: number;
-      wins: number;
-      winRate: number;
-      totalWagered: number;
-      profitLoss: number;
-    }>();
+  // Calculate summary statistics
+  const calculateStats = () => {
+    if (!betsData.length) return null;
 
-    store.parlays.byId.forEach(bet => {
-      bet.legs.forEach(leg => {
+    const totalBets = betsData.length;
+    const totalWagered = betsData.reduce((sum, bet) => sum + (bet.wager || 0), 0);
+    const totalPotential = betsData.reduce((sum, bet) => sum + (bet.potentialPayout || 0), 0);
+    
+    // Get unique players and prop types
+    const players = new Set();
+    const propTypes = new Set();
+    betsData.forEach(bet => {
+      bet.legs.forEach((leg: any) => {
+        if (leg.player) players.add(leg.player);
+        if (leg.propType) propTypes.add(leg.propType);
+      });
+    });
+
+    return {
+      totalBets,
+      totalWagered,
+      totalPotential,
+      uniquePlayers: players.size,
+      uniquePropTypes: propTypes.size
+    };
+  };
+
+  // Get player performance data
+  const getPlayerStats = () => {
+    const playerStats = new Map();
+
+    betsData.forEach(bet => {
+      bet.legs.forEach((leg: any) => {
+        if (!leg.player) return;
+
         const stats = playerStats.get(leg.player) || {
           player: leg.player,
           totalBets: 0,
           wins: 0,
-          winRate: 0,
-          totalWagered: 0,
-          profitLoss: 0
+          totalWager: 0
         };
 
         stats.totalBets++;
-        if (leg.result.toLowerCase() === 'win') {
-          stats.wins++;
-        }
+        if (leg.result?.toLowerCase() === 'win') stats.wins++;
+        stats.totalWager += (bet.wager || 0) / bet.legs.length; // Split wager across legs
         stats.winRate = (stats.wins / stats.totalBets) * 100;
-        stats.totalWagered += bet.wager / bet.legs.length; // Distribute wager across legs
-        stats.profitLoss += leg.result.toLowerCase() === 'win' ? 
-          (bet.potentialPayout - bet.wager) / bet.legs.length : 
-          -bet.wager / bet.legs.length;
 
         playerStats.set(leg.player, stats);
       });
     });
 
-    console.log('Player performance data:', Array.from(playerStats.values()));
-    return Array.from(playerStats.values())
-      .filter(stats => stats.totalBets > 0)
-      .sort((a, b) => b.totalBets - a.totalBets)
-      .slice(0, 10); // Top 10 most bet players
+    return Array.from(playerStats.values());
   };
 
-  const getPropTypePerformanceData = () => {
-    if (!store) return [];
-    
-    const propStats = new Map<string, {
-      propType: string;
-      totalBets: number;
-      wins: number;
-      winRate: number;
-      averageOdds: number;
-      profitLoss: number;
-    }>();
+  // Get prop type performance data
+  const getPropTypeStats = () => {
+    const propStats = new Map();
 
-    store.parlays.byId.forEach(bet => {
-      bet.legs.forEach(leg => {
+    betsData.forEach(bet => {
+      bet.legs.forEach((leg: any) => {
+        if (!leg.propType) return;
+
         const stats = propStats.get(leg.propType) || {
           propType: leg.propType,
           totalBets: 0,
           wins: 0,
-          winRate: 0,
-          averageOdds: 0,
-          profitLoss: 0
+          totalWager: 0
         };
 
         stats.totalBets++;
-        if (leg.result.toLowerCase() === 'win') {
-          stats.wins++;
-        }
+        if (leg.result?.toLowerCase() === 'win') stats.wins++;
+        stats.totalWager += (bet.wager || 0) / bet.legs.length;
         stats.winRate = (stats.wins / stats.totalBets) * 100;
-        stats.averageOdds = ((stats.averageOdds * (stats.totalBets - 1)) + leg.odds) / stats.totalBets;
-        stats.profitLoss += leg.result.toLowerCase() === 'win' ? 
-          (bet.potentialPayout - bet.wager) / bet.legs.length : 
-          -bet.wager / bet.legs.length;
 
         propStats.set(leg.propType, stats);
       });
     });
 
-    console.log('Prop type performance data:', Array.from(propStats.values()));
-    return Array.from(propStats.values())
-      .filter(stats => stats.totalBets > 0)
-      .sort((a, b) => b.totalBets - a.totalBets);
+    return Array.from(propStats.values());
   };
 
   if (loading) {
@@ -136,14 +116,7 @@ export const BettingDashboard = () => {
         <Card>
           <CardContent className="pt-6">
             <div className="text-center">
-              <div className="text-xl font-bold mb-2">Processing Betting History</div>
-              <div className="text-sm text-gray-600 mb-4">Progress: {progress}%</div>
-              <div className="w-full bg-gray-200 rounded-full h-2.5">
-                <div 
-                  className="bg-blue-600 h-2.5 rounded-full" 
-                  style={{ width: `${progress}%` }}
-                ></div>
-              </div>
+              <div className="text-xl font-bold">Processing File...</div>
             </div>
           </CardContent>
         </Card>
@@ -172,9 +145,13 @@ export const BettingDashboard = () => {
     );
   }
 
-  if (!store) {
-    return (
-      <div className="p-4">
+  const stats = calculateStats();
+  const playerStats = getPlayerStats();
+  const propTypeStats = getPropTypeStats();
+
+  return (
+    <div className="p-4 space-y-4">
+      {!betsData.length ? (
         <Card>
           <CardHeader>
             <CardTitle>Upload Betting History</CardTitle>
@@ -183,91 +160,96 @@ export const BettingDashboard = () => {
             <input
               type="file"
               onChange={handleFileUpload}
-              accept=".xml,.xlsx,.xls"
+              accept=".txt,.xls,.xlsx"
               className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
             />
           </CardContent>
         </Card>
-      </div>
-    );
-  }
-
-  const playerData = getPlayerPerformanceData();
-  const propData = getPropTypePerformanceData();
-
-  return (
-    <div className="p-4 space-y-4">
-      {/* Summary Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-2xl font-bold text-blue-600">{store.metadata.totalBets}</div>
-            <div className="text-sm text-gray-600">Total Bets</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-2xl font-bold text-green-600">${store.metadata.totalWagered.toFixed(2)}</div>
-            <div className="text-sm text-gray-600">Total Wagered</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-2xl font-bold text-purple-600">{store.metadata.players.size}</div>
-            <div className="text-sm text-gray-600">Unique Players</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-2xl font-bold text-orange-600">{store.metadata.propTypes.size}</div>
-            <div className="text-sm text-gray-600">Prop Types</div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Player Performance Chart */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Player Performance</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="h-96">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={playerData} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis type="number" domain={[0, 100]} />
-                <YAxis type="category" dataKey="player" width={150} />
-                <Tooltip />
-                <Legend />
-                <Bar dataKey="winRate" name="Win Rate %" fill="#82ca9d" />
-                <Bar dataKey="totalBets" name="Total Bets" fill="#8884d8" />
-              </BarChart>
-            </ResponsiveContainer>
+      ) : (
+        <>
+          {/* Summary Stats */}
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+            <Card>
+              <CardContent className="pt-6">
+                <div className="text-2xl font-bold text-blue-600">{stats?.totalBets}</div>
+                <div className="text-sm text-gray-600">Total Bets</div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-6">
+                <div className="text-2xl font-bold text-green-600">
+                  ${stats?.totalWagered.toFixed(2)}
+                </div>
+                <div className="text-sm text-gray-600">Total Wagered</div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-6">
+                <div className="text-2xl font-bold text-purple-600">
+                  ${stats?.totalPotential.toFixed(2)}
+                </div>
+                <div className="text-sm text-gray-600">Total Potential</div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-6">
+                <div className="text-2xl font-bold text-orange-600">{stats?.uniquePlayers}</div>
+                <div className="text-sm text-gray-600">Players</div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-6">
+                <div className="text-2xl font-bold text-pink-600">{stats?.uniquePropTypes}</div>
+                <div className="text-sm text-gray-600">Prop Types</div>
+              </CardContent>
+            </Card>
           </div>
-        </CardContent>
-      </Card>
 
-      {/* Prop Type Performance Chart */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Prop Type Performance</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="h-96">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={propData} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis type="number" domain={[0, 100]} />
-                <YAxis type="category" dataKey="propType" width={150} />
-                <Tooltip />
-                <Legend />
-                <Bar dataKey="winRate" name="Win Rate %" fill="#82ca9d" />
-                <Bar dataKey="averageOdds" name="Average Odds" fill="#8884d8" />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </CardContent>
-      </Card>
+          {/* Player Performance Chart */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Player Performance</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="h-96">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={playerStats} layout="vertical">
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis type="number" domain={[0, 100]} />
+                    <YAxis type="category" dataKey="player" width={150} />
+                    <Tooltip />
+                    <Legend />
+                    <Bar dataKey="winRate" name="Win Rate %" fill="#82ca9d" />
+                    <Bar dataKey="totalBets" name="Total Bets" fill="#8884d8" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Prop Type Performance Chart */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Prop Type Performance</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="h-96">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={propTypeStats} layout="vertical">
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis type="number" domain={[0, 100]} />
+                    <YAxis type="category" dataKey="propType" width={150} />
+                    <Tooltip />
+                    <Legend />
+                    <Bar dataKey="winRate" name="Win Rate %" fill="#82ca9d" />
+                    <Bar dataKey="totalBets" name="Total Bets" fill="#8884d8" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      )}
     </div>
   );
 };
